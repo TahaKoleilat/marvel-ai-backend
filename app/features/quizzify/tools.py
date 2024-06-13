@@ -295,6 +295,7 @@ class QuizBuilder:
                                 return False
                         return True
             return False
+        
         except TypeError as e:
             if self.verbose:
                 logger.error(f"TypeError during response validation: {e}")
