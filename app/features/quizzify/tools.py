@@ -335,6 +335,7 @@ class QuizBuilder:
             # Move to the next attempt regardless of success to ensure progress
             attempts += 1
 
+    
         # Log if fewer questions are generated
         if len(generated_questions) < num_questions:
             logger.warning(f"Only generated {len(generated_questions)} out of {num_questions} requested questions")
