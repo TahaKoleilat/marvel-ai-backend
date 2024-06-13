@@ -20,7 +20,7 @@ from langchain_core.pydantic_v1 import BaseModel, Field
 from services.logger import setup_logger
 from services.tool_registry import ToolFile
 from api.error_utilities import LoaderError
-
+from youtube_transcript_api import YouTubeTranscriptApi
 relative_path = "features/quzzify"
 
 logger = setup_logger(__name__)
@@ -51,6 +51,8 @@ class RAGRunnable:
 class UploadPDFLoader:
     def __init__(self, files: List[UploadFile]):
         self.files = files
+    
+    
 
     def load(self) -> List[Document]:
         documents = []
@@ -65,32 +67,56 @@ class UploadPDFLoader:
 
                     doc = Document(page_content=page_content, metadata=metadata)
                     documents.append(doc)
+            
 
         return documents
 
 class BytesFilePDFLoader:
-    def __init__(self, files: List[Tuple[BytesIO, str]]):
+    def __init__(self, files: List[Tuple[BytesIO, str,float,float]]):
         self.files = files
-    
-    def load(self) -> List[Document]:
-        documents = []
+        self.documents = []
         
-        for file, file_type in self.files:
+    def load_url(self,video_url: str,section_start: float, section_end: float):
+        video_id = video_url.split("v=")[1].split("&")[0]
+        logger.info(f"Processing Youtube Video ID: {video_id}")
+        transcript = YouTubeTranscriptApi.get_transcript(video_id)
+        transcript_segments = []
+        for entry in transcript:
+            metadata = {
+                'source': 'youtube',
+                'video_id': video_id,
+                'start_time': entry['start'],
+                'duration': entry['duration']
+            }
+            doc = Document(page_content=entry['text'],metadata = metadata)
+            transcript_segments.append(doc)
+        filtered_segments = [doc for doc in transcript_segments if section_start <= doc.metadata['start_time'] <= section_end]
+        self.documents.extend(filtered_segments)  
+            
+        # print(f"Processed video URL into document: {doc}")
+        
+    def load(self) -> List[Document]:
+        
+        for file, file_type,section_start,section_end in self.files:
+            print("---------FILE---------",file)
             logger.debug(file_type)
             if file_type.lower() == "pdf":
                 pdf_reader = PdfReader(file) #! PyPDF2.PdfReader is deprecated
 
                 for i, page in enumerate(pdf_reader.pages):
-                    page_content = page.extract_text()
-                    metadata = {"source": file_type, "page_number": i + 1}
+                    if section_start <= i+1 <= section_end:
+                        page_content = page.extract_text()
+                        metadata = {"source": file_type, "page_number": i + 1}
 
                     doc = Document(page_content=page_content, metadata=metadata)
-                    documents.append(doc)
-                    
+                    self.documents.append(doc)
+            elif file_type.lower() == "youtube":
+                self.load_url(file,section_start,section_end)
+                
             else:
                 raise ValueError(f"Unsupported file type: {file_type}")
             
-        return documents
+        return self.documents
 
 class LocalFileLoader:
     def __init__(self, file_paths: list[str], expected_file_type="pdf"):
@@ -122,6 +148,8 @@ class LocalFileLoader:
 
         return documents
 
+
+
 class URLLoader:
     def __init__(self, file_loader=None, expected_file_type="pdf", verbose=False):
         self.loader = file_loader or BytesFilePDFLoader
@@ -136,28 +164,35 @@ class URLLoader:
         for tool_file in tool_files:
             try:
                 url = tool_file.url
+                section_start = tool_file.section_start
+                section_end = tool_file.section_end or float('inf')
                 response = requests.get(url)
                 parsed_url = urlparse(url)
                 path = parsed_url.path
-
                 if response.status_code == 200:
-                    # Read file
-                    file_content = BytesIO(response.content)
+                    
+                    print("------FILE TYPE----------",self.expected_file_type)
+                    if self.expected_file_type not in ["youtube","web_url"]:
+                        # Read file
+                        file_content = BytesIO(response.content)
 
-                    # Check file type
-                    file_type = path.split(".")[-1]
-                    if file_type != self.expected_file_type:
-                        raise LoaderError(f"Expected file type: {self.expected_file_type}, but got: {file_type}")
+                        # Check file type
+                        file_type = path.split(".")[-1]
+                        if file_type != self.expected_file_type:
+                            raise LoaderError(f"Expected file type: {self.expected_file_type}, but got: {file_type}")
 
-                    # Append to Queue
-                    queued_files.append((file_content, file_type))
+                        # Append to Queue
+                        queued_files.append((file_content, file_type,section_start,section_end))
+                    else:
+                        queued_files.append((url, "youtube",section_start,section_end))
+                        
                     if self.verbose:
                         logger.info(f"Successfully loaded file from {url}")
 
                     any_success = True  # Mark that at least one file was successfully loaded
                 else:
                     logger.error(f"Request failed to load file from {url} and got status code {response.status_code}")
-
+                
             except Exception as e:
                 logger.error(f"Failed to load file from {url}")
                 logger.error(e)
@@ -167,7 +202,7 @@ class URLLoader:
         if any_success:
             file_loader = self.loader(queued_files)
             documents = file_loader.load()
-
+            print("=======documents======",documents)
             if self.verbose:
                 logger.info(f"Loaded {len(documents)} documents")
 
@@ -175,6 +210,7 @@ class URLLoader:
             raise LoaderError("Unable to load any files from URLs")
 
         return documents
+    
 
 class RAGpipeline:
     def __init__(self, loader=None, splitter=None, vectorstore_class=None, embedding_model=None, verbose=False):
@@ -190,18 +226,21 @@ class RAGpipeline:
         self.embedding_model = embedding_model or default_config["embedding_model"]
         self.verbose = verbose
 
+    
     def load_PDFs(self, files) -> List[Document]:
         if self.verbose:
             logger.info(f"Loading {len(files)} files")
             logger.info(f"Loader type used: {type(self.loader)}")
-        
+        total_loaded_files = []
         logger.debug(f"Loader is a: {type(self.loader)}")
-        
-        try:
-            total_loaded_files = self.loader.load(files)
-        except LoaderError as e:
-            logger.error(f"Loader experienced error: {e}")
-            raise LoaderError(e)
+        for file in files:
+            print("---------------URL ------------------",file.url)
+            
+            try:
+                total_loaded_files.extend(self.loader.load(files))
+            except LoaderError as e:
+                logger.error(f"Loader experienced error: {e}")
+                raise LoaderError(e)
             
         return total_loaded_files
     
@@ -262,6 +301,8 @@ class QuizBuilder:
         
         if vectorstore is None: raise ValueError("Vectorstore must be provided")
         if topic is None: raise ValueError("Topic must be provided")
+        
+        
     
     def compile(self):
         # Return the chain
@@ -295,7 +336,6 @@ class QuizBuilder:
                                 return False
                         return True
             return False
-        
         except TypeError as e:
             if self.verbose:
                 logger.error(f"TypeError during response validation: {e}")
@@ -314,7 +354,7 @@ class QuizBuilder:
         
         generated_questions = []
         attempts = 0
-        max_attempts = num_questions * 5  # Allow for more attempts to generate questions
+        max_attempts = num_questions * 10  # Allow for more attempts to generate questions
 
         while len(generated_questions) < num_questions and attempts < max_attempts:
             response = chain.invoke(self.topic)

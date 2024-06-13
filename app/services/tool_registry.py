@@ -3,6 +3,7 @@ from services.logger import setup_logger
 from typing import List, Any, Optional, Dict
 from api.error_utilities import InputValidationError
 
+
 logger = setup_logger(__name__)
 
 class ToolInput(BaseModel):
@@ -20,3 +21,5 @@ class ToolFile(BaseModel):
     filePath: Optional[str] = None
     url: str
     filename: Optional[str] = None
+    section_start:float = 0
+    section_end : Optional[float] = None
