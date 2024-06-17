@@ -8,7 +8,7 @@ import os
 import json
 import time
 from docx import Documents as DocumentFromDocx
-
+import pandas as pd
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_chroma import Chroma
@@ -101,7 +101,66 @@ class BytesFilePDFLoader:
                 
         for page_content, metadata in filtered_pages:
             self.documents.append(Document(page_content,metadata))        
+    
+    
+    def load_xlsx(self, file, section_start, section_end):
+            
+        df = pd.read_excel(file)
+        print("Data Preview:", df.head())
+
+        row_start, col_start = section_start
+        row_end, col_end = section_end
+
+        row_start = max(0, row_start)
+        row_end = min(len(df) - 1, row_end)
+        col_start = max(0, col_start)
+        col_end = min(len(df.columns) - 1, col_end)
+        filtered_df = df.iloc[row_start:row_end + 1, col_start:col_end + 1]
+        print("Filtered Data Preview:", filtered_df)
+
+        for index, row in filtered_df.iterrows():
+            filtered_text = row.to_string()
+            filtered_doc = {
+                "page_content": filtered_text,
+                "metadata": {
+                    "row": index,
+                    "columns": list(filtered_df.columns)
+                }
+            }
+            self.pages.append(filtered_doc)
+
+        print(f"Total pages processed: {len(self.pages)}")
+    
+    
         
+    def load_csv(self, file, section_start, section_end):
+            
+        df = pd.read_csv(file)
+        print("Data Preview:", df.head())
+
+        row_start, col_start = section_start
+        row_end, col_end = section_end
+
+        row_start = max(0, row_start)
+        row_end = min(len(df) - 1, row_end)
+        col_start = max(0, col_start)
+        col_end = min(len(df.columns) - 1, col_end)
+        filtered_df = df.iloc[row_start:row_end + 1, col_start:col_end + 1]
+        print("Filtered Data Preview:", filtered_df)
+
+        for index, row in filtered_df.iterrows():
+            filtered_text = row.to_string()
+            filtered_doc = {
+                "page_content": filtered_text,
+                "metadata": {
+                    "row": index,
+                    "columns": list(filtered_df.columns)
+                }
+            }
+            self.pages.append(filtered_doc)
+
+        print(f"Total pages processed: {len(self.pages)}")
+    
     
     
     def load_docx(self,file,section_start: float, section_end: float):
@@ -178,7 +237,12 @@ class BytesFilePDFLoader:
                 
             elif file_type.lower() == ".txt":
                 self.load_txt(file,section_start,section_end)
+            
+            elif file_type.lower() == ".csv":
+                self.load_csv(file,section_start,section_end)
                 
+            elif file_type.lower() == ".xlsx":
+                self.load_xlsx(file,section_start,section_end)    
             else:
                 raise ValueError(f"Unsupported file type: {file_type}")
             
