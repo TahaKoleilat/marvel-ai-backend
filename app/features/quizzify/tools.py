@@ -7,6 +7,7 @@ import requests
 import os
 import json
 import time
+from docx import Documents as DocumentFromDocx
 
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -75,6 +76,65 @@ class BytesFilePDFLoader:
     def __init__(self, files: List[Tuple[BytesIO, str,float,float]]):
         self.files = files
         self.documents = []
+    
+    def load_txt(self,file,section_start: float, section_end: float):
+        pages = []
+        with open(file,'r') as txt_file:
+            txt_content = txt_file.read()
+            words_per_page = 500
+            
+            words = txt_content.split()
+            num_words = len(words)
+            num_pages = (num_words // words_per_page) + (1 if num_words % words_per_page > 0 else 0 )
+            print("NUM PAGES ----------->",num_pages)
+            for i in range(num_pages):
+                start_idx = i * words_per_page
+                end_idx = min((i+1)*words_per_page , num_words)
+                page_content = ' '.join(words[start_idx:end_idx])
+                metadata = {'soure':'txt', 'page_number': i+1}
+                pages.append((page_content,metadata))
+        
+        filtered_pages = []
+        for page_content, metadata in pages:
+            if section_start <= metadata['page_number'] <= section_end:
+                filtered_pages.append((page_content,metadata))
+                
+        for page_content, metadata in filtered_pages:
+            self.documents.append(Document(page_content,metadata))        
+        
+    
+    
+    def load_docx(self,file,section_start: float, section_end: float):
+        doc = DocumentFromDocx(file)
+        doc_text = []
+        for paragraph in doc.paragraphs:
+            doc_text.append(paragraph.text)
+        current_page = []
+        word_count = 0 
+        words_per_page = 500
+        pages = []
+        page_number = 1
+        for para in doc_text:
+            word_count += len(para.split())
+            current_page.append(para)
+            if word_count >= words_per_page:
+                page_content = " ".join(current_page)
+                pages.append((page_content,{'source':'docx','page_number':page_number})) 
+                current_page = []
+                word_count = 0
+                page_number += 1
+        if current_page:
+            self.documents.append(" ".join(current_page))
+            pages.append((page_content,{'source':'docx','page_number':page_number})) 
+            page_number += 1
+        
+        filtered_pages = []
+        for page_content, metadata in pages:
+            if section_start <= metadata['page_number'] <= section_end:
+                filtered_pages.append((page_content,metadata))
+                
+        for page_content, metadata in filtered_pages:
+            self.documents.append(Document(page_content,metadata))        
         
     def load_url(self,video_url: str,section_start: float, section_end: float):
         video_id = video_url.split("v=")[1].split("&")[0]
@@ -112,6 +172,12 @@ class BytesFilePDFLoader:
                     self.documents.append(doc)
             elif file_type.lower() == "youtube":
                 self.load_url(file,section_start,section_end)
+            
+            elif file_type.lower() == "docx" or file_type.lower() == "doc":
+                self.load_docx(file,section_start,section_end)
+                
+            elif file_type.lower() == ".txt":
+                self.load_txt(file,section_start,section_end)
                 
             else:
                 raise ValueError(f"Unsupported file type: {file_type}")
