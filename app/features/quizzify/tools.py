@@ -77,90 +77,110 @@ class BytesFilePDFLoader:
         self.files = files
         self.documents = []
     
-    def load_txt(self,file,section_start: float, section_end: float):
+    def load_txt(self, file, section_start: float, section_end: float):
+        response = requests.get(file)
+        if response.status_code != 200:
+            raise Exception(f"Failed to download the file: {response.status_code}")
+        
+        file_content = BytesIO(response.content)
+        
+        try:
+            txt_content = file_content.getvalue().decode("utf-8")
+        except UnicodeDecodeError:
+            txt_content = file_content.getvalue().decode("latin-1")
+
         pages = []
-        with open(file,'r') as txt_file:
-            txt_content = txt_file.read()
-            words_per_page = 500
-            
-            words = txt_content.split()
-            num_words = len(words)
-            num_pages = (num_words // words_per_page) + (1 if num_words % words_per_page > 0 else 0 )
-            print("NUM PAGES ----------->",num_pages)
-            for i in range(num_pages):
-                start_idx = i * words_per_page
-                end_idx = min((i+1)*words_per_page , num_words)
-                page_content = ' '.join(words[start_idx:end_idx])
-                metadata = {'soure':'txt', 'page_number': i+1}
-                pages.append((page_content,metadata))
+        words_per_page = 500
+        words = txt_content.split()
+        num_words = len(words)
+        num_pages = (num_words // words_per_page) + (1 if num_words % words_per_page > 0 else 0)
+        print("NUM PAGES ----------->", num_pages)
+
+        for i in range(num_pages):
+            start_idx = i * words_per_page
+            end_idx = min((i+1) * words_per_page, num_words)
+            page_content = ' '.join(words[start_idx:end_idx])
+            metadata = {'source': 'txt', 'page_number': i + 1}
+            pages.append((page_content, metadata))
         
-        filtered_pages = []
-        for page_content, metadata in pages:
-            if section_start <= metadata['page_number'] <= section_end:
-                filtered_pages.append((page_content,metadata))
-                
+        filtered_pages = [page for page in pages if section_start <= page[1]['page_number'] <= section_end]
+
+        print("Filtered Pages ----------->", filtered_pages)
+
         for page_content, metadata in filtered_pages:
-            self.documents.append(Document(page_content,metadata))        
-    
-    
-    def load_xlsx(self, file, section_start, section_end):
-            
-        df = pd.read_excel(file)
+            self.documents.append(Document(page_content=page_content, metadata=metadata))
+
+        print(f"Total documents loaded: {len(self.documents)}")
+        
+    def load_xlsx(self, url, section_start, section_end):
+        response = requests.get(url)
+        if response.status_code != 200:
+            raise Exception(f"Failed to download the file: {response.status_code}")
+        
+        file_content = BytesIO(response.content)
+        df = pd.read_excel(file_content)
+        
         print("Data Preview:", df.head())
 
-        row_start, col_start = section_start
-        row_end, col_end = section_end
+        row_start = int(section_start) if isinstance(section_start, (int, float)) else int(section_start[0])
+        col_start = int(section_start) if isinstance(section_start, (int, float)) else int(section_start[1])
+        row_end = int(section_end) if isinstance(section_end, (int, float)) else int(section_end[0])
+        col_end = int(section_end) if isinstance(section_end, (int, float)) else int(section_end[1])
 
         row_start = max(0, row_start)
         row_end = min(len(df) - 1, row_end)
         col_start = max(0, col_start)
         col_end = min(len(df.columns) - 1, col_end)
+
         filtered_df = df.iloc[row_start:row_end + 1, col_start:col_end + 1]
         print("Filtered Data Preview:", filtered_df)
 
         for index, row in filtered_df.iterrows():
             filtered_text = row.to_string()
-            filtered_doc = {
-                "page_content": filtered_text,
-                "metadata": {
-                    "row": index,
-                    "columns": list(filtered_df.columns)
-                }
+            metadata = {
+                "row": index,
+                "columns": ', '.join(list(filtered_df.columns))  
             }
-            self.pages.append(filtered_doc)
+            self.documents.append(Document(page_content=filtered_text, metadata=metadata))
 
-        print(f"Total pages processed: {len(self.pages)}")
+        print(f"Total pages processed: {len(self.documents)}")
+    
     
     
         
-    def load_csv(self, file, section_start, section_end):
-            
-        df = pd.read_csv(file)
+    def load_csv(self, url, section_start, section_end):
+        response = requests.get(url)
+        if response.status_code != 200:
+            raise Exception(f"Failed to download the file: {response.status_code}")
+        
+        file_content = BytesIO(response.content)
+        df = pd.read_csv(file_content)
+        
         print("Data Preview:", df.head())
 
-        row_start, col_start = section_start
-        row_end, col_end = section_end
+        row_start = int(section_start) if isinstance(section_start, (int, float)) else int(section_start[0])
+        col_start = int(section_start) if isinstance(section_start, (int, float)) else int(section_start[1])
+        row_end = int(section_end) if isinstance(section_end, (int, float)) else int(section_end[0])
+        col_end = int(section_end) if isinstance(section_end, (int, float)) else int(section_end[1])
 
         row_start = max(0, row_start)
         row_end = min(len(df) - 1, row_end)
         col_start = max(0, col_start)
         col_end = min(len(df.columns) - 1, col_end)
+
         filtered_df = df.iloc[row_start:row_end + 1, col_start:col_end + 1]
         print("Filtered Data Preview:", filtered_df)
 
         for index, row in filtered_df.iterrows():
             filtered_text = row.to_string()
-            filtered_doc = {
-                "page_content": filtered_text,
-                "metadata": {
-                    "row": index,
-                    "columns": list(filtered_df.columns)
-                }
+            metadata = {
+                "row": index,
+                "columns": list(filtered_df.columns)
             }
-            self.pages.append(filtered_doc)
+            self.documents.append(Document(page_content=filtered_text, metadata=metadata))
 
-        print(f"Total pages processed: {len(self.pages)}")
-    
+        print(f"Total pages processed: {len(self.documents)}")
+
     
     
     def load_docx(self, file, section_start: float, section_end: float):
@@ -245,10 +265,10 @@ class BytesFilePDFLoader:
             elif file_type.lower() == "txt":
                 self.load_txt(file,section_start,section_end)
             
-            elif file_type.lower() == ".csv":
+            elif file_type.lower() == "csv":
                 self.load_csv(file,section_start,section_end)
                 
-            elif file_type.lower() == ".xlsx":
+            elif file_type.lower() == "xlsx":
                 self.load_xlsx(file,section_start,section_end)    
             else:
                 raise ValueError(f"Unsupported file type: {file_type}")
@@ -256,7 +276,7 @@ class BytesFilePDFLoader:
         return self.documents
 
 class LocalFileLoader:
-    def __init__(self, file_paths: list[str],  expected_file_type="docx"):
+    def __init__(self, file_paths: list[str],  expected_file_type="txt"):
         self.file_paths = file_paths
         self.expected_file_type = expected_file_type
 
@@ -288,7 +308,7 @@ class LocalFileLoader:
 
 
 class URLLoader:
-    def __init__(self, file_loader=None, expected_file_type="docx", verbose=False):
+    def __init__(self, file_loader=None, expected_file_type="txt", verbose=False):
         self.loader = file_loader or BytesFilePDFLoader
         self.expected_file_type = expected_file_type
         self.verbose = verbose
@@ -310,7 +330,7 @@ class URLLoader:
                     
                     print("------FILE TYPE----------",self.expected_file_type)
                     
-                    if self.expected_file_type not in ["youtube","web_url"]:
+                    if self.expected_file_type not in ["youtube","web_url","csv","xlsx","txt"]:
                         # Read file
                         file_content = BytesIO(response.content)
 
@@ -323,7 +343,7 @@ class URLLoader:
                         # Append to Queue
                         queued_files.append((file_content, file_type,section_start,section_end))
                     else:
-                        queued_files.append((url, "docx",section_start,section_end))
+                        queued_files.append((url, "txt",section_start,section_end))
                         
                     if self.verbose:
                         logger.info(f"Successfully loaded file from {url}")
