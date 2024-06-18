@@ -7,7 +7,7 @@ import requests
 import os
 import json
 import time
-from docx import Documents as DocumentFromDocx
+from docx import Document as DocumentFromDocx
 import pandas as pd
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -163,37 +163,44 @@ class BytesFilePDFLoader:
     
     
     
-    def load_docx(self,file,section_start: float, section_end: float):
+    def load_docx(self, file, section_start: float, section_end: float):
         doc = DocumentFromDocx(file)
         doc_text = []
         for paragraph in doc.paragraphs:
             doc_text.append(paragraph.text)
+
         current_page = []
-        word_count = 0 
+        word_count = 0
         words_per_page = 500
         pages = []
         page_number = 1
+
         for para in doc_text:
             word_count += len(para.split())
             current_page.append(para)
             if word_count >= words_per_page:
                 page_content = " ".join(current_page)
-                pages.append((page_content,{'source':'docx','page_number':page_number})) 
+                pages.append((page_content, {'source': 'docx', 'page_number': page_number}))
                 current_page = []
                 word_count = 0
                 page_number += 1
+
         if current_page:
-            self.documents.append(" ".join(current_page))
-            pages.append((page_content,{'source':'docx','page_number':page_number})) 
-            page_number += 1
-        
-        filtered_pages = []
-        for page_content, metadata in pages:
-            if section_start <= metadata['page_number'] <= section_end:
-                filtered_pages.append((page_content,metadata))
-                
-        for page_content, metadata in filtered_pages:
-            self.documents.append(Document(page_content,metadata))        
+            page_content = " ".join(current_page)
+            pages.append((page_content, {'source': 'docx', 'page_number': page_number}))
+
+        filtered_pages = [
+            (page_content, metadata) for page_content, metadata in pages
+            if section_start <= metadata['page_number'] <= section_end
+        ]
+
+        print("Everything fine till here ")
+
+        try:
+            for page_content, metadata in filtered_pages:
+                self.documents.append(Document(page_content=page_content, metadata=metadata))
+        except Exception as e:
+            print(f"Message: {e}")
         
     def load_url(self,video_url: str,section_start: float, section_end: float):
         video_id = video_url.split("v=")[1].split("&")[0]
@@ -212,7 +219,6 @@ class BytesFilePDFLoader:
         filtered_segments = [doc for doc in transcript_segments if section_start <= doc.metadata['start_time'] <= section_end]
         self.documents.extend(filtered_segments)  
             
-        # print(f"Processed video URL into document: {doc}")
         
     def load(self) -> List[Document]:
         
@@ -233,9 +239,10 @@ class BytesFilePDFLoader:
                 self.load_url(file,section_start,section_end)
             
             elif file_type.lower() == "docx" or file_type.lower() == "doc":
+                print("GOES TO DOC")
                 self.load_docx(file,section_start,section_end)
                 
-            elif file_type.lower() == ".txt":
+            elif file_type.lower() == "txt":
                 self.load_txt(file,section_start,section_end)
             
             elif file_type.lower() == ".csv":
@@ -249,7 +256,7 @@ class BytesFilePDFLoader:
         return self.documents
 
 class LocalFileLoader:
-    def __init__(self, file_paths: list[str], expected_file_type="pdf"):
+    def __init__(self, file_paths: list[str],  expected_file_type="docx"):
         self.file_paths = file_paths
         self.expected_file_type = expected_file_type
 
@@ -281,7 +288,7 @@ class LocalFileLoader:
 
 
 class URLLoader:
-    def __init__(self, file_loader=None, expected_file_type="pdf", verbose=False):
+    def __init__(self, file_loader=None, expected_file_type="docx", verbose=False):
         self.loader = file_loader or BytesFilePDFLoader
         self.expected_file_type = expected_file_type
         self.verbose = verbose
@@ -302,19 +309,21 @@ class URLLoader:
                 if response.status_code == 200:
                     
                     print("------FILE TYPE----------",self.expected_file_type)
+                    
                     if self.expected_file_type not in ["youtube","web_url"]:
                         # Read file
                         file_content = BytesIO(response.content)
 
                         # Check file type
                         file_type = path.split(".")[-1]
+                        print("URL--------FILE------TYPE-----------",file_type)
                         if file_type != self.expected_file_type:
                             raise LoaderError(f"Expected file type: {self.expected_file_type}, but got: {file_type}")
 
                         # Append to Queue
                         queued_files.append((file_content, file_type,section_start,section_end))
                     else:
-                        queued_files.append((url, "youtube",section_start,section_end))
+                        queued_files.append((url, "docx",section_start,section_end))
                         
                     if self.verbose:
                         logger.info(f"Successfully loaded file from {url}")
