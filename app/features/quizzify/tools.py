@@ -122,15 +122,13 @@ class BytesFilePDFLoader:
         
         print("Data Preview:", df.head())
 
-        row_start = int(section_start) if isinstance(section_start, (int, float)) else int(section_start[0])
-        col_start = int(section_start) if isinstance(section_start, (int, float)) else int(section_start[1])
-        row_end = int(section_end) if isinstance(section_end, (int, float)) else int(section_end[0])
-        col_end = int(section_end) if isinstance(section_end, (int, float)) else int(section_end[1])
+        start_row, start_col = self.parse_section(section_start)
+        end_row, end_col = self.parse_section(section_end)
 
-        row_start = max(0, row_start)
-        row_end = min(len(df) - 1, row_end)
-        col_start = max(0, col_start)
-        col_end = min(len(df.columns) - 1, col_end)
+        row_start = max(0, min(start_row, end_row, len(df) - 1))
+        row_end = min(len(df) - 1, max(start_row, end_row))
+        col_start = max(0, min(start_col, end_col, len(df.columns) - 1))
+        col_end = min(len(df.columns) - 1, max(start_col, end_col))
 
         filtered_df = df.iloc[row_start:row_end + 1, col_start:col_end + 1]
         print("Filtered Data Preview:", filtered_df)
@@ -139,7 +137,7 @@ class BytesFilePDFLoader:
             filtered_text = row.to_string()
             metadata = {
                 "row": index,
-                "columns": ', '.join(list(filtered_df.columns))  
+                "columns": ", ".join(filtered_df.columns)  
             }
             self.documents.append(Document(page_content=filtered_text, metadata=metadata))
 
@@ -158,15 +156,13 @@ class BytesFilePDFLoader:
         
         print("Data Preview:", df.head())
 
-        row_start = int(section_start) if isinstance(section_start, (int, float)) else int(section_start[0])
-        col_start = int(section_start) if isinstance(section_start, (int, float)) else int(section_start[1])
-        row_end = int(section_end) if isinstance(section_end, (int, float)) else int(section_end[0])
-        col_end = int(section_end) if isinstance(section_end, (int, float)) else int(section_end[1])
+        start_row, start_col = self.parse_section(section_start)
+        end_row, end_col = self.parse_section(section_end)
 
-        row_start = max(0, row_start)
-        row_end = min(len(df) - 1, row_end)
-        col_start = max(0, col_start)
-        col_end = min(len(df.columns) - 1, col_end)
+        row_start = max(0, min(start_row, end_row, len(df) - 1))
+        row_end = min(len(df) - 1, max(start_row, end_row))
+        col_start = max(0, min(start_col, end_col, len(df.columns) - 1))
+        col_end = min(len(df.columns) - 1, max(start_col, end_col))
 
         filtered_df = df.iloc[row_start:row_end + 1, col_start:col_end + 1]
         print("Filtered Data Preview:", filtered_df)
@@ -175,13 +171,19 @@ class BytesFilePDFLoader:
             filtered_text = row.to_string()
             metadata = {
                 "row": index,
-                "columns": list(filtered_df.columns)
+                "columns": ", ".join(filtered_df.columns)  
             }
             self.documents.append(Document(page_content=filtered_text, metadata=metadata))
 
         print(f"Total pages processed: {len(self.documents)}")
 
-    
+    def parse_section(self, section):
+        if isinstance(section, (int, float)):
+            return int(section), 0  
+        elif isinstance(section, list):
+            return int(section[0]), int(section[1])
+        else:
+            raise ValueError(f"Invalid section format: {section}")
     
     def load_docx(self, file, section_start: float, section_end: float):
         doc = DocumentFromDocx(file)
@@ -276,7 +278,7 @@ class BytesFilePDFLoader:
         return self.documents
 
 class LocalFileLoader:
-    def __init__(self, file_paths: list[str],  expected_file_type="txt"):
+    def __init__(self, file_paths: list[str],  expected_file_type="docx"):
         self.file_paths = file_paths
         self.expected_file_type = expected_file_type
 
@@ -308,7 +310,7 @@ class LocalFileLoader:
 
 
 class URLLoader:
-    def __init__(self, file_loader=None, expected_file_type="txt", verbose=False):
+    def __init__(self, file_loader=None, expected_file_type="docx", verbose=False):
         self.loader = file_loader or BytesFilePDFLoader
         self.expected_file_type = expected_file_type
         self.verbose = verbose
@@ -343,7 +345,7 @@ class URLLoader:
                         # Append to Queue
                         queued_files.append((file_content, file_type,section_start,section_end))
                     else:
-                        queued_files.append((url, "txt",section_start,section_end))
+                        queued_files.append((url, "csv",section_start,section_end))
                         
                     if self.verbose:
                         logger.info(f"Successfully loaded file from {url}")

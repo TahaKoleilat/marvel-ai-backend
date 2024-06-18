@@ -1,6 +1,6 @@
-from pydantic import BaseModel
+from pydantic import BaseModel,validator
 from services.logger import setup_logger
-from typing import List, Any, Optional, Dict
+from typing import List, Any, Optional, Dict,Union
 from api.error_utilities import InputValidationError
 
 
@@ -21,5 +21,16 @@ class ToolFile(BaseModel):
     filePath: Optional[str] = None
     url: str
     filename: Optional[str] = None
-    section_start:float = 0
-    section_end : Optional[float] = None
+    section_start: Union[float, List[float]] = 0
+    section_end: Optional[Union[float, List[float]]] = None
+
+    
+    @validator('section_start', 'section_end', pre=True, always=True)
+    def parse_section(cls, value):
+        if isinstance(value, str):
+            parts = value.split(',')
+            if len(parts) == 1:
+                return float(parts[0])
+            else:
+                return [float(part) for part in parts]
+        return value
