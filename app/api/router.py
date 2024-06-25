@@ -25,10 +25,8 @@ async def submit_tool(data: ToolRequest, _ = Depends(key_check)):
         
         request_inputs_dict = finalize_inputs(request_data.inputs, requested_tool['inputs'])
 
-        # Execute tool to obtain the initial result
         initial_result = execute_tool(request_data.tool_id, request_inputs_dict)
         print("SUBMIT INITIAL RESULT",initial_result)
-       # Redirect to preview endpoint with initial result for potential editing
         return ToolResponse(data=initial_result)
     except InputValidationError as e:
         logger.error(f"InputValidationError: {e}")
