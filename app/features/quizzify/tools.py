@@ -1,30 +1,62 @@
-from typing import List, Tuple, Dict, Any
+from typing import List, Tuple, Dict, Any, Union
 from io import BytesIO
 from fastapi import UploadFile
 from pypdf import PdfReader
+from pptx import Presentation
+from docx import Document as DocumentFromDocx
+import pandas as pd
+from bs4 import BeautifulSoup
 from urllib.parse import urlparse
+import urllib.request
 import requests
 import os
 import json
 import time
-from docx import Document as DocumentFromDocx
-import pandas as pd
+from tqdm import tqdm
+import re
+import logging
+
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_community.document_loaders import UnstructuredWordDocumentLoader,\
+    UnstructuredPowerPointLoader, TextLoader, UnstructuredExcelLoader, WebBaseLoader, CSVLoader
 from langchain_chroma import Chroma
-from langchain_google_vertexai import VertexAIEmbeddings, VertexAI
 from langchain_core.prompts import PromptTemplate
 from langchain_core.runnables import RunnablePassthrough, RunnableParallel
 from langchain_core.output_parsers import JsonOutputParser
 from langchain_core.pydantic_v1 import BaseModel, Field
 
+from langchain_google_vertexai import VertexAIEmbeddings, VertexAI
+
 from services.logger import setup_logger
 from services.tool_registry import ToolFile
 from api.error_utilities import LoaderError
+
+from vertexai.generative_models import GenerativeModel
+
 from youtube_transcript_api import YouTubeTranscriptApi
+
 relative_path = "features/quzzify"
 
 logger = setup_logger(__name__)
+logging.basicConfig(level=logging.INFO)
+
+def transform_json_dict(input_data: dict) -> dict:
+    # Validate and parse the input data to ensure it matches the QuizQuestion schema
+    quiz_question = QuizQuestion(**input_data)
+
+    # Transform the choices list into a dictionary
+    transformed_choices = {choice.key: choice.value for choice in quiz_question.choices}
+
+    # Create the transformed structure
+    transformed_data = {
+        "question": quiz_question.question,
+        "choices": transformed_choices,
+        "answer": quiz_question.answer,
+        "explanation": quiz_question.explanation
+    }
+
+    return transformed_data
 
 def read_text_file(file_path):
     # Get the directory containing the script file
@@ -52,8 +84,6 @@ class RAGRunnable:
 class UploadPDFLoader:
     def __init__(self, files: List[UploadFile]):
         self.files = files
-    
-    
 
     def load(self) -> List[Document]:
         documents = []
@@ -68,59 +98,38 @@ class UploadPDFLoader:
 
                     doc = Document(page_content=page_content, metadata=metadata)
                     documents.append(doc)
-            
 
         return documents
 
-class BytesFilePDFLoader:
-    def __init__(self, files: List[Tuple[BytesIO, str,float,float]]):
+class BytesFileLoader:
+    def __init__(self, files):
         self.files = files
         self.documents = []
+        
+    def process_pdf(self, file: BytesIO, specific_list:List[int],section_start:float,section_end:float):
+        
+        pdf_reader = PdfReader(file) #! PyPDF2.PdfReader is deprecated
+        
+        pdf_segments = []
+
+        for i, page in enumerate(pdf_reader.pages):
+            
+            page_content = page.extract_text()
+            metadata = {"source": "pdf", "page_number": i + 1}
+
+            doc = Document(page_content=page_content, metadata=metadata)
+            pdf_segments.append(doc)
+            
+        if(specific_list is not None):
+            filtered_segments = [doc for doc in pdf_segments if doc.metadata['page_number'] in specific_list]
+        else:
+            filtered_segments = [doc for doc in pdf_segments if section_start <= doc.metadata['page_number'] <= section_end]
+            
+        self.documents.extend(filtered_segments)
+        
+    def process_csv(self, file: BytesIO, section_start:Union[float, List[float]],section_end:Union[float, List[float]]):
     
-    def load_txt(self, file, section_start: float, section_end: float):
-        response = requests.get(file)
-        if response.status_code != 200:
-            raise Exception(f"Failed to download the file: {response.status_code}")
-        
-        file_content = BytesIO(response.content)
-        
-        try:
-            txt_content = file_content.getvalue().decode("utf-8")
-        except UnicodeDecodeError:
-            txt_content = file_content.getvalue().decode("latin-1")
-
-        pages = []
-        words_per_page = 500
-        words = txt_content.split()
-        num_words = len(words)
-        num_pages = (num_words // words_per_page) + (1 if num_words % words_per_page > 0 else 0)
-        print("NUM PAGES ----------->", num_pages)
-
-        for i in range(num_pages):
-            start_idx = i * words_per_page
-            end_idx = min((i+1) * words_per_page, num_words)
-            page_content = ' '.join(words[start_idx:end_idx])
-            metadata = {'source': 'txt', 'page_number': i + 1}
-            pages.append((page_content, metadata))
-        
-        filtered_pages = [page for page in pages if section_start <= page[1]['page_number'] <= section_end]
-
-        print("Filtered Pages ----------->", filtered_pages)
-
-        for page_content, metadata in filtered_pages:
-            self.documents.append(Document(page_content=page_content, metadata=metadata))
-
-        print(f"Total documents loaded: {len(self.documents)}")
-        
-    def load_xlsx(self, url, section_start, section_end):
-        response = requests.get(url)
-        if response.status_code != 200:
-            raise Exception(f"Failed to download the file: {response.status_code}")
-        
-        file_content = BytesIO(response.content)
-        df = pd.read_excel(file_content)
-        
-        print("Data Preview:", df.head())
+        df = pd.read_csv(file)
 
         start_row, start_col = self.parse_section(section_start)
         end_row, end_col = self.parse_section(section_end)
@@ -131,7 +140,6 @@ class BytesFilePDFLoader:
         col_end = min(len(df.columns) - 1, max(start_col, end_col))
 
         filtered_df = df.iloc[row_start:row_end + 1, col_start:col_end + 1]
-        print("Filtered Data Preview:", filtered_df)
 
         for index, row in filtered_df.iterrows():
             filtered_text = row.to_string()
@@ -140,22 +148,12 @@ class BytesFilePDFLoader:
                 "columns": ", ".join(filtered_df.columns)  
             }
             self.documents.append(Document(page_content=filtered_text, metadata=metadata))
-
-        print(f"Total pages processed: {len(self.documents)}")
-    
-    
-    
+                
+            
+    def process_xlsx(self, file: BytesIO, section_start:Union[float, List[float]],section_end:Union[float, List[float]]):
         
-    def load_csv(self, url, section_start, section_end):
-        response = requests.get(url)
-        if response.status_code != 200:
-            raise Exception(f"Failed to download the file: {response.status_code}")
+        df = pd.read_excel(file)
         
-        file_content = BytesIO(response.content)
-        df = pd.read_csv(file_content)
-        
-        print("Data Preview:", df.head())
-
         start_row, start_col = self.parse_section(section_start)
         end_row, end_col = self.parse_section(section_end)
 
@@ -165,7 +163,6 @@ class BytesFilePDFLoader:
         col_end = min(len(df.columns) - 1, max(start_col, end_col))
 
         filtered_df = df.iloc[row_start:row_end + 1, col_start:col_end + 1]
-        print("Filtered Data Preview:", filtered_df)
 
         for index, row in filtered_df.iterrows():
             filtered_text = row.to_string()
@@ -175,8 +172,7 @@ class BytesFilePDFLoader:
             }
             self.documents.append(Document(page_content=filtered_text, metadata=metadata))
 
-        print(f"Total pages processed: {len(self.documents)}")
-
+        
     def parse_section(self, section):
         if isinstance(section, (int, float)):
             return int(section), 0  
@@ -184,48 +180,162 @@ class BytesFilePDFLoader:
             return int(section[0]), int(section[1])
         else:
             raise ValueError(f"Invalid section format: {section}")
-    
-    def load_docx(self, file, section_start: float, section_end: float):
-        doc = DocumentFromDocx(file)
-        doc_text = []
-        for paragraph in doc.paragraphs:
-            doc_text.append(paragraph.text)
-
-        current_page = []
-        word_count = 0
-        words_per_page = 500
-        pages = []
-        page_number = 1
-
-        for para in doc_text:
-            word_count += len(para.split())
-            current_page.append(para)
-            if word_count >= words_per_page:
-                page_content = " ".join(current_page)
-                pages.append((page_content, {'source': 'docx', 'page_number': page_number}))
-                current_page = []
-                word_count = 0
-                page_number += 1
-
-        if current_page:
-            page_content = " ".join(current_page)
-            pages.append((page_content, {'source': 'docx', 'page_number': page_number}))
-
-        filtered_pages = [
-            (page_content, metadata) for page_content, metadata in pages
-            if section_start <= metadata['page_number'] <= section_end
-        ]
-
-        print("Everything fine till here ")
-
-        try:
-            for page_content, metadata in filtered_pages:
-                self.documents.append(Document(page_content=page_content, metadata=metadata))
-        except Exception as e:
-            print(f"Message: {e}")
         
-    def load_url(self,video_url: str,section_start: float, section_end: float):
-        video_id = video_url.split("v=")[1].split("&")[0]
+    def process_txt(self, file: BytesIO, specific_list:List[int], section_start:float,section_end:float):
+        
+        try:
+            txt_content = file.getvalue().decode("utf-8")
+        except UnicodeDecodeError:
+            txt_content = file.getvalue().decode("latin-1")
+
+        pages = []
+        words_per_page = 500
+        words = txt_content.split()
+        num_words = len(words)
+        num_pages = (num_words // words_per_page) + (1 if num_words % words_per_page > 0 else 0)
+
+        for i in range(num_pages):
+            start_idx = i * words_per_page
+            end_idx = min((i+1) * words_per_page, num_words)
+            page_content = ' '.join(words[start_idx:end_idx])
+            metadata = {'source': 'txt', 'page_number': i + 1}
+            pages.append((page_content, metadata))
+            
+        if(specific_list is not None):
+            filtered_pages = [page for page in pages if page[1]['page_number'] in specific_list]
+        else:
+            filtered_pages = [page for page in pages if section_start <= page[1]['page_number'] <= section_end]
+        
+        for page_content, metadata in filtered_pages:
+            self.documents.append(Document(page_content=page_content, metadata=metadata))
+    
+        
+    def process_docx(self, file: BytesIO, file_type:str, specific_list:List[int], section_start:float,section_end:float):
+        
+        if(file_type == "doc"):
+            logger.warning("Specific pages is not implemented for doc files. Convert to docx for specific pages")
+            with open("temp.doc", 'wb') as temp_file:
+                temp_file.write(file.getbuffer())
+            loader = UnstructuredWordDocumentLoader("temp.doc")
+            doc = loader.load()
+            self.documents.extend(doc)
+            os.unlink("temp.doc")
+
+        else:
+            doc = DocumentFromDocx(file)
+            doc_text = []
+            for paragraph in doc.paragraphs:
+                doc_text.append(paragraph.text)
+            current_page = []
+            word_count = 0 
+            words_per_page = 500
+            pages = []
+            page_number = 1
+            for para in doc_text:
+                word_count += len(para.split())
+                current_page.append(para)
+                if word_count >= words_per_page:
+                    page_content = " ".join(current_page)
+                    logger.info(page_content)
+                    pages.append((page_content,{'source':'docx','page_number':page_number})) 
+                    current_page = []
+                    word_count = 0
+                    page_number += 1
+            if current_page:
+                pages.append((page_content,{'source':'docx','page_number':page_number})) 
+                page_number += 1
+            
+            filtered_pages = []
+            for page_content, metadata in pages:
+                if(specific_list is not None):
+                    if metadata['page_number'] in specific_list:
+                        filtered_pages.append((page_content,metadata))
+                else:
+                    if section_start <= metadata['page_number'] <= section_end:
+                        filtered_pages.append((page_content,metadata))
+                    
+            for page_content, metadata in filtered_pages:
+                self.documents.append(Document(page_content=page_content,metadata=metadata))
+        
+    def process_pptx(self, file: BytesIO, file_type:str, specific_list:List[int],section_start:float,section_end:float):
+        
+        if(file_type == "ppt"):
+            logger.warning("Specific slides is not implemented for ppt files. Convert to pptx for specific slides")
+            with open("temp.ppt", 'wb') as temp_file:
+                temp_file.write(file.getbuffer())
+            loader = UnstructuredPowerPointLoader("temp.ppt")
+            doc = loader.load()
+            self.documents.extend(doc)
+            os.unlink("temp.ppt")
+         
+        else:   
+            presentation = Presentation(file)
+            
+            presentation_segments = []
+            
+            for i, slide in enumerate(presentation.slides):
+                # Extract text from the slide
+                slide_content = '\n'.join(shape.text for shape in slide.shapes if hasattr(shape, "text"))
+                metadata = {"source": "pptx", "slide_number": i + 1}
+                        
+                doc = Document(page_content=slide_content, metadata=metadata)
+                presentation_segments.append(doc)
+            
+            if(specific_list is not None):
+                filtered_segments = [doc for doc in presentation_segments if doc.metadata['slide_number'] in specific_list]
+            else:
+                filtered_segments = [doc for doc in presentation_segments if section_start <= doc.metadata['slide_number'] <= section_end]
+            
+            self.documents.extend(filtered_segments)
+    
+    def process_web(self, file: str, specific_list:List[int],section_start:float,section_end:float):
+
+        user_agent = 'Mozilla/5.0 (Windows; U; Windows NT 5.1; en-US; rv:1.9.0.7) Gecko/2009021910 Firefox/3.0.7'
+        headers={'User-Agent':user_agent,} 
+        request = urllib.request.Request(file,None,headers)
+        html = urllib.request.urlopen(request).read()
+        web_text = ' '.join(BeautifulSoup(html, "html.parser").stripped_strings)
+        web_segments = []
+        
+        split_lines = False
+        
+        if(len(web_text.split("\n\n")) <= 1):
+            logger.warning("Web page does not have paragraphs. Splitting by line")
+            split_lines = True
+            split_web_text = web_text.split("\n")
+        else:
+            split_web_text = web_text.split("\n\n")
+        
+        for i,entry in enumerate(split_web_text):
+            if(split_lines):
+                metadata = {
+                    'source': 'web_url',
+                    'url': file,
+                    'line': i + 1
+                }
+            else:
+                metadata = {
+                    'source': 'web_url',
+                    'url': file,
+                    'paragraph': i + 1
+                }
+            doc = Document(page_content=entry,metadata = metadata)
+            web_segments.append(doc)
+            
+        if(specific_list is not None):
+            if(split_lines):
+                filtered_segments = [doc for doc in web_segments if doc.metadata['line'] in specific_list]
+            else:
+                filtered_segments = [doc for doc in web_segments if doc.metadata['paragraph'] in specific_list]
+        else:
+            filtered_segments = [doc for doc in web_segments if section_start <= doc.metadata['line'] <= section_end]
+            
+        self.documents.extend(filtered_segments)
+        
+    
+    def process_youtube(self, file: str, section_start:float,section_end:float):
+        
+        video_id = file.split("v=")[1].split("&")[0]
         logger.info(f"Processing Youtube Video ID: {video_id}")
         transcript = YouTubeTranscriptApi.get_transcript(video_id)
         transcript_segments = []
@@ -238,47 +348,40 @@ class BytesFilePDFLoader:
             }
             doc = Document(page_content=entry['text'],metadata = metadata)
             transcript_segments.append(doc)
-        filtered_segments = [doc for doc in transcript_segments if section_start <= doc.metadata['start_time'] <= section_end]
-        self.documents.extend(filtered_segments)  
-            
         
+        filtered_segments = [doc for doc in transcript_segments if section_start <= doc.metadata['start_time'] <= section_end]
+        self.documents.extend(filtered_segments)
+        
+    
     def load(self) -> List[Document]:
         
-        for file, file_type,section_start,section_end in self.files:
-            print("---------FILE---------",file)
+        for file, file_type,specific_list,section_start,section_end in self.files:
             logger.debug(file_type)
-            if file_type.lower() == "pdf":
-                pdf_reader = PdfReader(file) #! PyPDF2.PdfReader is deprecated
-
-                for i, page in enumerate(pdf_reader.pages):
-                    if section_start <= i+1 <= section_end:
-                        page_content = page.extract_text()
-                        metadata = {"source": file_type, "page_number": i + 1}
-
-                    doc = Document(page_content=page_content, metadata=metadata)
-                    self.documents.append(doc)
-            elif file_type.lower() == "youtube":
-                self.load_url(file,section_start,section_end)
-            
-            elif file_type.lower() == "docx" or file_type.lower() == "doc":
-                print("GOES TO DOC")
-                self.load_docx(file,section_start,section_end)
-                
-            elif file_type.lower() == "txt":
-                self.load_txt(file,section_start,section_end)
-            
-            elif file_type.lower() == "csv":
-                self.load_csv(file,section_start,section_end)
-                
-            elif file_type.lower() == "xlsx":
-                self.load_xlsx(file,section_start,section_end)    
-            else:
-                raise ValueError(f"Unsupported file type: {file_type}")
+            match file_type.lower():
+                case "pdf":
+                    self.process_pdf(file,specific_list,section_start,section_end)
+                case "xlsx":
+                    self.process_xlsx(file,section_start,section_end)
+                case "txt":
+                    self.process_txt(file,specific_list,section_start,section_end)
+                case "csv":
+                    self.process_csv(file,section_start,section_end)
+                case "docx" | "doc":
+                    self.process_docx(file,file_type,specific_list,section_start,section_end)
+                case "pptx" | "ppt":
+                    self.process_pptx(file,file_type,specific_list,section_start,section_end)
+                case "web_url":
+                    self.process_web(file,specific_list,section_start,section_end)
+                case "youtube":
+                    self.process_youtube(file,section_start,section_end)
+                case _:
+                    raise ValueError(f"Unsupported file type: {file_type}")
             
         return self.documents
 
+
 class LocalFileLoader:
-    def __init__(self, file_paths: list[str],  expected_file_type="docx"):
+    def __init__(self, file_paths: list[str], expected_file_type="web_url"):
         self.file_paths = file_paths
         self.expected_file_type = expected_file_type
 
@@ -307,11 +410,9 @@ class LocalFileLoader:
 
         return documents
 
-
-
 class URLLoader:
-    def __init__(self, file_loader=None, expected_file_type="docx", verbose=False):
-        self.loader = file_loader or BytesFilePDFLoader
+    def __init__(self, file_loader=None, expected_file_type="web_url", verbose=False):
+        self.loader = file_loader or BytesFileLoader
         self.expected_file_type = expected_file_type
         self.verbose = verbose
 
@@ -323,37 +424,50 @@ class URLLoader:
         for tool_file in tool_files:
             try:
                 url = tool_file.url
-                section_start = tool_file.section_start
-                section_end = tool_file.section_end or float('inf')
                 response = requests.get(url)
                 parsed_url = urlparse(url)
                 path = parsed_url.path
+                self.expected_file_type = tool_file.file_type
+                section_start = tool_file.section_start
+                section_end = tool_file.section_end or float('inf')
+                specific_list = tool_file.specific_list
+                if(type(section_start) == float):
+                    if(section_start >= section_end):
+                        raise LoaderError(f"section_start must be less than section_end")
+                    if(section_start < 0):
+                        section_start = 0
+                
+
                 if response.status_code == 200:
-                    
-                    print("------FILE TYPE----------",self.expected_file_type)
-                    
-                    if self.expected_file_type not in ["youtube","web_url","csv","xlsx","txt"]:
+                    if(self.expected_file_type not in ["youtube","web_url"]):
                         # Read file
                         file_content = BytesIO(response.content)
 
                         # Check file type
                         file_type = path.split(".")[-1]
-                        print("URL--------FILE------TYPE-----------",file_type)
                         if file_type != self.expected_file_type:
                             raise LoaderError(f"Expected file type: {self.expected_file_type}, but got: {file_type}")
 
                         # Append to Queue
-                        queued_files.append((file_content, file_type,section_start,section_end))
+                        queued_files.append((file_content, file_type,specific_list,section_start,section_end))
                     else:
-                        queued_files.append((url, "csv",section_start,section_end))
-                        
+                        if("youtube" in url):
+                            if(self.expected_file_type != "youtube"):
+                                raise LoaderError(f"Expected file type: {self.expected_file_type}")
+                            else:
+                                # Append to Queue
+                                queued_files.append((url, "youtube",specific_list,section_start,section_end))
+                        else:
+                            queued_files.append((url, "web_url",specific_list,section_start,section_end))
+
                     if self.verbose:
                         logger.info(f"Successfully loaded file from {url}")
 
                     any_success = True  # Mark that at least one file was successfully loaded
+                    
                 else:
                     logger.error(f"Request failed to load file from {url} and got status code {response.status_code}")
-                
+
             except Exception as e:
                 logger.error(f"Failed to load file from {url}")
                 logger.error(e)
@@ -361,9 +475,11 @@ class URLLoader:
 
         # Pass Queue to the file loader if there are any successful loads
         if any_success:
+            logger.info(f"Loading {len(queued_files)} files")
             file_loader = self.loader(queued_files)
+            logger.debug(f"File loader is a: {type(file_loader)}")
             documents = file_loader.load()
-            print("=======documents======",documents)
+                
             if self.verbose:
                 logger.info(f"Loaded {len(documents)} documents")
 
@@ -371,7 +487,7 @@ class URLLoader:
             raise LoaderError("Unable to load any files from URLs")
 
         return documents
-    
+
 
 class RAGpipeline:
     def __init__(self, loader=None, splitter=None, vectorstore_class=None, embedding_model=None, verbose=False):
@@ -387,21 +503,18 @@ class RAGpipeline:
         self.embedding_model = embedding_model or default_config["embedding_model"]
         self.verbose = verbose
 
-    
-    def load_PDFs(self, files) -> List[Document]:
+    def load_docs(self, files) -> List[Document]:
         if self.verbose:
             logger.info(f"Loading {len(files)} files")
             logger.info(f"Loader type used: {type(self.loader)}")
-        total_loaded_files = []
+        
         logger.debug(f"Loader is a: {type(self.loader)}")
-        for file in files:
-            print("---------------URL ------------------",file.url)
-            
-            try:
-                total_loaded_files.extend(self.loader.load(files))
-            except LoaderError as e:
-                logger.error(f"Loader experienced error: {e}")
-                raise LoaderError(e)
+        
+        try:
+            total_loaded_files = self.loader.load(files)
+        except LoaderError as e:
+            logger.error(f"Loader experienced error: {e}")
+            raise LoaderError(e)
             
         return total_loaded_files
     
@@ -429,7 +542,7 @@ class RAGpipeline:
     
     def compile(self):
         # Compile the pipeline
-        self.load_PDFs = RAGRunnable(self.load_PDFs)
+        self.load_docs = RAGRunnable(self.load_docs)
         self.split_loaded_documents = RAGRunnable(self.split_loaded_documents)
         self.create_vectorstore = RAGRunnable(self.create_vectorstore)
         if self.verbose: logger.info(f"Completed pipeline compilation")
@@ -441,7 +554,7 @@ class RAGpipeline:
             logger.info(f"Executing pipeline")
             logger.info(f"Start of Pipeline received: {len(documents)} documents of type {type(documents[0])}")
         
-        pipeline = self.load_PDFs | self.split_loaded_documents | self.create_vectorstore
+        pipeline = self.load_docs | self.split_loaded_documents | self.create_vectorstore
         return pipeline(documents)
 
 class QuizBuilder:
@@ -455,15 +568,14 @@ class QuizBuilder:
         self.prompt = prompt or default_config["prompt"]
         self.model = model or default_config["model"]
         self.parser = parser or default_config["parser"]
-        
+        self.generated_questions = []
         self.vectorstore = vectorstore
         self.topic = topic
         self.verbose = verbose
         
         if vectorstore is None: raise ValueError("Vectorstore must be provided")
         if topic is None: raise ValueError("Topic must be provided")
-        
-        
+    
     
     def compile(self):
         # Return the chain
@@ -515,13 +627,14 @@ class QuizBuilder:
         
         generated_questions = []
         attempts = 0
-        max_attempts = num_questions * 10  # Allow for more attempts to generate questions
+        max_attempts = num_questions * 5  # Allow for more attempts to generate questions
 
         while len(generated_questions) < num_questions and attempts < max_attempts:
             response = chain.invoke(self.topic)
             if self.verbose:
                 logger.info(f"Generated response attempt {attempts + 1}: {response}")
-            
+
+            response = transform_json_dict(response)
             # Directly check if the response format is valid
             if self.validate_response(response):
                 response["choices"] = self.format_choices(response["choices"])
@@ -542,15 +655,46 @@ class QuizBuilder:
         
         if self.verbose: logger.info(f"Deleting vectorstore")
         self.vectorstore.delete_collection()
+        self.generated_questions = generated_questions[:num_questions]
         
         # Return the list of questions
-        return generated_questions[:num_questions]
+        return self.generated_questions
+    
+    
+    def get_generated_questions(self) -> List[Dict]:
+        return self.generated_questions
+    
+    
+    def update_question(self,question_index: int, updated_question: Dict) -> None:
+        if 0 <= question_index < len(self.generated_questions):
+            self.generated_questions[question_index] = updated_question
+        else:
+            raise IndexError("Question Index out of range.")
 
 class QuestionChoice(BaseModel):
-    key: str = Field(description="A unique identifier for the choice using letters A, B, C, D, etc.")
+    key: str = Field(description="A unique identifier for the choice using letters A, B, C, or D.")
     value: str = Field(description="The text content of the choice")
 class QuizQuestion(BaseModel):
     question: str = Field(description="The question text")
-    choices: List[QuestionChoice] = Field(description="A list of choices")
-    answer: str = Field(description="The correct answer")
+    choices: List[QuestionChoice] = Field(description="A list of choices for the question, each with a key and a value")
+    answer: str = Field(description="The key of the correct answer from the choices list")
     explanation: str = Field(description="An explanation of why the answer is correct")
+
+    model_config = {
+        "json_schema_extra": {
+            "examples": """ 
+                {
+                "question": "What is the capital of France?",
+                "choices": [
+                    {"key": "A", "value": "Berlin"},
+                    {"key": "B", "value": "Madrid"},
+                    {"key": "C", "value": "Paris"},
+                    {"key": "D", "value": "Rome"}
+                ],
+                "answer": "C",
+                "explanation": "Paris is the capital of France."
+              }
+          """
+        }
+
+      }

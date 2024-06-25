@@ -1,6 +1,6 @@
 from pydantic import BaseModel,validator
 from services.logger import setup_logger
-from typing import List, Any, Optional, Dict,Union
+from typing import List, Any, Optional, Dict, Union
 from api.error_utilities import InputValidationError
 
 
@@ -17,13 +17,27 @@ class BaseTool(BaseModel):
     tool_id: int  # Unique identifier for each tool,
     inputs: List[ToolInput]
 
+class Choice(BaseModel):
+    key : str
+    value : str
+    
+class QuestionFile(BaseModel):
+    question : str
+    choices : List[Choice]
+    answer: str
+    explanation : str
+
+class ResultFile(BaseModel):
+    data: List[QuestionFile]
+
 class ToolFile(BaseModel):
     filePath: Optional[str] = None
     url: str
     filename: Optional[str] = None
     section_start: Union[float, List[float]] = 0
     section_end: Optional[Union[float, List[float]]] = None
-
+    specific_list: Optional[List[int]] = None
+    file_type: str # [pdf, doc, docx, ppt, pptx, txt, xlsx, csv, web_url, youtube]
     
     @validator('section_start', 'section_end', pre=True, always=True)
     def parse_section(cls, value):

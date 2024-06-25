@@ -3,6 +3,7 @@ from services.logger import setup_logger
 from features.quizzify.tools import RAGpipeline
 from features.quizzify.tools import QuizBuilder
 from api.error_utilities import LoaderError, ToolExecutorError
+import uuid
 
 logger = setup_logger()
 
@@ -20,9 +21,9 @@ def executor(files: list[ToolFile], topic: str, num_questions: int, verbose=Fals
         # Process the uploaded files
         db = pipeline(files)
         print("--------------------------------PIPELINE WORKS --------------------------------")
-        
+        quiz_builder =QuizBuilder(db, topic, verbose=verbose).create_questions(num_questions)
         # Create and return the quiz questions
-        output = QuizBuilder(db, topic, verbose=verbose).create_questions(num_questions)
+        output = quiz_builder
     
     except LoaderError as e:
         error_message = e
