@@ -6,6 +6,11 @@
             "type": "text"
         },
         {
+            "label": "Lecture hall",
+            "name": "lecture_hall",
+            "type": "integer"
+        },
+        {
             "label": "Important Dates",
             "name": "important_dates",
             "type": "text"

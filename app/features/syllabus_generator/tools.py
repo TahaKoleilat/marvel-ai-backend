@@ -12,6 +12,7 @@ class SyllabusRequestArgs(BaseModel):
     subject_topic: str
     grade_level: str
     subject: str
+    lecture_hall: int
     course_description: str
     course_objectives: str
     required_materials: str
@@ -34,6 +35,7 @@ class SyllabusGeneratorPipeline:
                 "Subject Topic: {subject_topic}\n"
                 "Grade Level: {grade_level}\n"
                 "Subject: {subject}\n"
+                "lecture Hall Number: {lecture_hall}\n"
                 "Course Description: {course_description}\n"
                 "Course Objectives: {course_objectives}\n"
                 "Required Materials: {required_materials}\n"
@@ -62,6 +64,7 @@ class SyllabusGeneratorPipeline:
                     "subject_topic",
                     "grade_level",
                     "subject",
+                    "lecture_hall",
                     "course_description",
                     "course_objectives",
                     "required_materials",
@@ -89,6 +92,7 @@ class SyllabusGeneratorPipeline:
 class CourseInformation(BaseModel):
     course_title: str = Field(description="The course title")
     grade_level: str = Field(description="The grade level")
+    lecture_hall: int = Field(description="The lecture hall number")
     description: str = Field(description="The course description")
 
 class InstructorInformation(BaseModel):
