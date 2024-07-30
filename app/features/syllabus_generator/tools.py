@@ -18,6 +18,7 @@ class SyllabusRequestArgs(BaseModel):
     grading_policy: str
     course_outline: str
     class_policies: str
+    class_exceptions: str
     instructor_name: str
     instructor_title: str
     file_type: str
@@ -40,6 +41,7 @@ class SyllabusGeneratorPipeline:
                 "Grading Policy: {grading_policy}\n"
                 "Course Outline: {course_outline}\n"
                 "Class Policies: {class_policies}\n"
+                "Class Exceptions: {class_exceptions}\n"
                 "Instructor Name: {instructor_name}\n"
                 "Instructor Title: {instructor_title}\n"
                 "File Type: {file_type}\n"
