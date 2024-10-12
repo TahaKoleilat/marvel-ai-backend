@@ -57,6 +57,11 @@
             "type": "string"
         },
         {
+            "label": "Class Exceptions",
+            "name": "class_exceptions",
+            "type": "text"
+        },
+        {
             "label": "Instructor Name",
             "name": "instructor_name",
             "type": "string"
